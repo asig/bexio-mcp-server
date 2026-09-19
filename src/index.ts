@@ -87,19 +87,35 @@ async function main(): Promise<void> {
 
   // v2.5.0: one or many companies. Single BEXIO_API_TOKEN → one company ("default");
   // BEXIO_API_TOKENS → multiple, switchable via the select_company tool.
+  //
+  // HTTP mode also supports per-request Bearer tokens (Authorization header).
+  // Env tokens are then optional and only used as a fallback when the client
+  // does not send a token on the request.
   const tokens = parseCompanyTokens(process.env);
   if (tokens.length === 0) {
-    logger.error("BEXIO_API_TOKEN (or BEXIO_API_TOKENS) environment variable is required");
-    logger.error("Set it in your .env file or environment");
-    process.exit(1);
+    if (mode === "stdio") {
+      logger.error(
+        "BEXIO_API_TOKEN (or BEXIO_API_TOKENS) environment variable is required in stdio mode"
+      );
+      logger.error("Set it in your .env file or environment");
+      process.exit(1);
+    }
+    logger.info(
+      "No BEXIO_API_TOKEN / BEXIO_API_TOKENS set — HTTP mode will require a Bearer token on each request"
+    );
+    // Still init so baseUrl is known for per-request clients.
+    companyManager.init({
+      baseUrl: BEXIO_BASE_URL,
+      tokens: [],
+    });
+  } else {
+    companyManager.init({
+      baseUrl: BEXIO_BASE_URL,
+      tokens,
+      defaultCompany: process.env["BEXIO_DEFAULT_COMPANY"],
+    });
   }
   logger.info(`Using Bexio API base URL: ${BEXIO_BASE_URL}`);
-
-  companyManager.init({
-    baseUrl: BEXIO_BASE_URL,
-    tokens,
-    defaultCompany: process.env["BEXIO_DEFAULT_COMPANY"],
-  });
 
   if (mode === "stdio") {
     logger.info("Starting in stdio mode (for Claude Desktop)");

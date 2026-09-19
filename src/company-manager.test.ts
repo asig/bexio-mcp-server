@@ -89,8 +89,49 @@ describe("CompanyManager", () => {
     expect(m.hasMultiple()).toBe(false);
   });
 
-  it("throws if no tokens are configured", () => {
+  it("allows init with no tokens (per-request Bearer mode)", () => {
     const m = new CompanyManager();
-    expect(() => m.init({ baseUrl: "x", tokens: [] })).toThrow();
+    expect(() =>
+      m.init({ baseUrl: "https://api.bexio.com/2.0", tokens: [] })
+    ).not.toThrow();
+    expect(m.hasConfiguredCompanies()).toBe(false);
+    expect(m.hasMultiple()).toBe(false);
+    expect(m.labels()).toEqual([]);
+    expect(m.getActiveLabel()).toBe("");
+    expect(m.getBaseUrl()).toBe("https://api.bexio.com/2.0");
+  });
+
+  it("getActiveClient throws a helpful error when no env companies are configured", () => {
+    const m = new CompanyManager();
+    m.init({ baseUrl: "https://api.bexio.com/2.0", tokens: [] });
+    expect(() => m.getActiveClient()).toThrow(/Authorization: Bearer/);
+  });
+
+  it("clientForToken builds a client without changing the active company", () => {
+    const m = new CompanyManager();
+    m.init(cfg());
+    expect(m.getActiveLabel()).toBe("Acme");
+    const client = m.clientForToken("request-token");
+    expect(typeof client.getCompanyProfile).toBe("function");
+    // Active company unchanged
+    expect(m.getActiveLabel()).toBe("Acme");
+    expect(m.getActiveClient()).not.toBe(client);
+  });
+
+  it("clientForToken rejects empty tokens", () => {
+    const m = new CompanyManager();
+    m.init({ baseUrl: "https://api.bexio.com/2.0", tokens: [] });
+    expect(() => m.clientForToken("")).toThrow(/Empty Bearer token/);
+    expect(() => m.clientForToken("   ")).toThrow(/Empty Bearer token/);
+  });
+
+  it("hasConfiguredCompanies is true when tokens are present", () => {
+    const m = new CompanyManager();
+    m.init({
+      baseUrl: "https://api.bexio.com/2.0",
+      tokens: [{ label: "default", token: "solo" }],
+    });
+    expect(m.hasConfiguredCompanies()).toBe(true);
+    expect(m.hasMultiple()).toBe(false);
   });
 });

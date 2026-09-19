@@ -125,12 +125,23 @@ export function getHandler(toolName: string): HandlerFn | undefined {
  * Create a handler registry. Each call resolves the CURRENTLY-active company's
  * client via companyManager, so select_company switches affect HTTP calls too
  * (the active company is process-global — see the multi-company caveat).
+ *
+ * When `clientOverride` is provided (e.g. from an HTTP Authorization Bearer
+ * token), that client is used instead of the env-configured active company.
  */
-export function createHandlerRegistry(): Map<string, (args: unknown) => Promise<unknown>> {
-  const registry = new Map<string, (args: unknown) => Promise<unknown>>();
+export function createHandlerRegistry(): Map<
+  string,
+  (args: unknown, clientOverride?: BexioClient) => Promise<unknown>
+> {
+  const registry = new Map<
+    string,
+    (args: unknown, clientOverride?: BexioClient) => Promise<unknown>
+  >();
 
   for (const [name, handler] of Object.entries(allHandlers)) {
-    registry.set(name, (args: unknown) => handler(companyManager.getActiveClient(), args));
+    registry.set(name, (args: unknown, clientOverride?: BexioClient) =>
+      handler(clientOverride ?? companyManager.getActiveClient(), args)
+    );
   }
 
   return registry;

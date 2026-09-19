@@ -101,7 +101,14 @@ export class CompanyManager {
       this.order.push(label);
     }
     if (this.order.length === 0) {
-      throw new Error("No Bexio company tokens configured (set BEXIO_API_TOKEN or BEXIO_API_TOKENS).");
+      // Allowed when HTTP clients supply a Bearer token per request.
+      // getActiveClient() will throw until a company is configured or a
+      // request-scoped client is used instead.
+      this.activeLabel = "";
+      logger.info(
+        "CompanyManager initialized with no env tokens (per-request Bearer mode)."
+      );
+      return;
     }
     this.activeLabel =
       config.defaultCompany && this.entries.has(config.defaultCompany)
@@ -112,9 +119,34 @@ export class CompanyManager {
     }
   }
 
+  /** True when at least one env-configured company token is available. */
+  hasConfiguredCompanies(): boolean {
+    return this.order.length > 0;
+  }
+
+  getBaseUrl(): string {
+    return this.baseUrl;
+  }
+
+  /**
+   * Build a short-lived client for a token received on an incoming request
+   * (e.g. Authorization: Bearer …). Does not touch the active-company state.
+   */
+  clientForToken(token: string): BexioClient {
+    const t = token.trim();
+    if (!t) {
+      throw new Error("Empty Bearer token.");
+    }
+    return new BexioClient({ baseUrl: this.baseUrl, apiToken: t });
+  }
+
   getActiveClient(): BexioClient {
     const e = this.entries.get(this.activeLabel);
-    if (!e) throw new Error("No active Bexio company.");
+    if (!e) {
+      throw new Error(
+        "No active Bexio company. Set BEXIO_API_TOKEN / BEXIO_API_TOKENS, or pass Authorization: Bearer <token> on the request."
+      );
+    }
     return e.client;
   }
 
