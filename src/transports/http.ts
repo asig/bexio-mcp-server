@@ -1,6 +1,6 @@
 /**
  * HTTP Transport for Bexio MCP Server.
- * Provides HTTP/REST access for n8n and other remote clients.
+ * Provides HTTP/REST access for n8n, LibreChat, Claude, and other remote clients.
  *
  * IMPORTANT: All logging uses logger (stderr), stdout reserved for nothing in HTTP mode.
  *
@@ -8,14 +8,30 @@
  * - Prefer the request's Authorization: Bearer <token> header when present.
  * - Otherwise fall back to the env-configured active company (BEXIO_API_TOKEN /
  *   BEXIO_API_TOKENS via companyManager).
+ *
+ * OAuth discovery (MCP resource server):
+ * - GET /.well-known/oauth-protected-resource[/mcp] — RFC 9728 PRM → Bexio IdP
+ * - GET /.well-known/oauth-authorization-server — Bexio AS metadata (RFC 8414)
+ * - 401 + WWW-Authenticate with resource_metadata when Bearer is missing
  */
 
-import Fastify, { FastifyInstance, FastifyRequest } from "fastify";
+import Fastify, {
+  FastifyInstance,
+  FastifyReply,
+  FastifyRequest,
+} from "fastify";
 import cors from "@fastify/cors";
 import { logger } from "../logger.js";
 import { getAllToolDefinitions, createHandlerRegistry } from "../tools/index.js";
 import { companyManager } from "../company-manager.js";
 import { parseBearerAuthorization } from "../shared/bearer.js";
+import {
+  buildBexioAuthorizationServerMetadata,
+  buildProtectedResourceMetadata,
+  buildWwwAuthenticateHeader,
+  loadOAuthDiscoveryConfig,
+  resolvePublicBaseUrl,
+} from "../shared/oauth-discovery.js";
 import type { BexioClient } from "../bexio-client.js";
 
 export interface HttpServerOptions {
@@ -44,6 +60,32 @@ function resolveClient(request: FastifyRequest): BexioClient | undefined {
   return undefined;
 }
 
+function publicBaseForRequest(request: FastifyRequest): string {
+  const { publicBaseUrl } = loadOAuthDiscoveryConfig();
+  return resolvePublicBaseUrl(publicBaseUrl, {
+    protocol: request.protocol,
+    hostname: request.hostname,
+    headers: request.headers as Record<string, unknown>,
+  });
+}
+
+/** Send 401 with MCP OAuth discovery challenge. */
+function sendUnauthorized(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  message = "Authorization required. Obtain a Bexio access token via OAuth and send Authorization: Bearer <token>."
+): void {
+  const base = publicBaseForRequest(request);
+  reply
+    .header("WWW-Authenticate", buildWwwAuthenticateHeader(base, "/mcp"))
+    .code(401)
+    .send({
+      error: "unauthorized",
+      error_description: message,
+      resource_metadata: `${base}/.well-known/oauth-protected-resource/mcp`,
+    });
+}
+
 /**
  * Creates an HTTP server for the MCP server.
  * This enables n8n and other HTTP clients to interact with the Bexio API.
@@ -52,6 +94,11 @@ export async function createHttpServer(
   options: HttpServerOptions
 ): Promise<FastifyInstance> {
   const { host, port } = options;
+
+  const oauthCfg = loadOAuthDiscoveryConfig();
+  logger.info(
+    `OAuth discovery: issuer=${oauthCfg.issuer}, publicBaseUrl=${oauthCfg.publicBaseUrl ?? "(from request Host)"}`
+  );
 
   // Handler registry can take an optional per-request client (Bearer override).
   const handlerRegistry = createHandlerRegistry();
@@ -67,20 +114,52 @@ export async function createHttpServer(
 
   logger.info("HTTP server initializing...");
 
+  // ---- OAuth discovery (RFC 9728 + RFC 8414) ----
+
+  const prmHandler = async (request: FastifyRequest) => {
+    const base = publicBaseForRequest(request);
+    return buildProtectedResourceMetadata(
+      {
+        publicBaseUrl: base,
+        issuer: oauthCfg.issuer,
+        scopes: oauthCfg.scopes,
+      },
+      "/mcp"
+    );
+  };
+
+  app.get("/.well-known/oauth-protected-resource", prmHandler);
+  app.get("/.well-known/oauth-protected-resource/mcp", prmHandler);
+
+  app.get("/.well-known/oauth-authorization-server", async () => {
+    return buildBexioAuthorizationServerMetadata(oauthCfg.issuer);
+  });
+
+  // OIDC discovery alias (some clients probe openid-configuration on the resource host)
+  app.get("/.well-known/openid-configuration", async () => {
+    return buildBexioAuthorizationServerMetadata(oauthCfg.issuer);
+  });
+
   // Health check endpoint
-  app.get("/", async () => {
+  app.get("/", async (request) => {
+    const base = publicBaseForRequest(request);
     return {
       status: "running",
       server: "bexio-mcp-server",
-      version: "2.0.0",
+      version: "2.5.0",
       mode: "http",
       auth: companyManager.hasConfiguredCompanies()
         ? "env-token-or-bearer"
         : "bearer-required",
+      oauth: {
+        issuer: oauthCfg.issuer,
+        protected_resource_metadata: `${base}/.well-known/oauth-protected-resource/mcp`,
+        authorization_server_metadata: `${base}/.well-known/oauth-authorization-server`,
+      },
     };
   });
 
-  // List tools endpoint (GET for simplicity)
+  // List tools endpoint (GET for simplicity) — public catalog
   app.get("/tools", async () => {
     const tools = getAllToolDefinitions();
     return { tools, count: tools.length };
@@ -105,16 +184,26 @@ export async function createHttpServer(
     const body = request.body;
     const client = resolveClient(request);
 
+    // Discovery-friendly challenge when no credentials (skip for initialize/tools/list)
+    const needsAuth =
+      !client &&
+      !isPublicMcpMethod(body);
+
+    if (needsAuth) {
+      sendUnauthorized(request, reply);
+      return;
+    }
+
     // Handle batch requests
     if (Array.isArray(body)) {
       const results = await Promise.all(
-        body.map((req) => handleJsonRpcRequest(req, handlerRegistry, client))
+        body.map((req) => handleJsonRpcRequest(req, handlerRegistry, client, request, reply))
       );
       return results;
     }
 
     // Handle single request
-    return handleJsonRpcRequest(body, handlerRegistry, client);
+    return handleJsonRpcRequest(body, handlerRegistry, client, request, reply);
   });
 
   // Direct tool call endpoint (simpler than JSON-RPC)
@@ -139,10 +228,8 @@ export async function createHttpServer(
 
       const client = resolveClient(request);
       if (!client) {
-        return reply.code(401).send({
-          error:
-            "Missing Bexio API token. Pass Authorization: Bearer <token> or set BEXIO_API_TOKEN.",
-        });
+        sendUnauthorized(request, reply);
+        return;
       }
 
       const result = await handler(args, client);
@@ -184,10 +271,8 @@ export async function createHttpServer(
 
       const client = resolveClient(request);
       if (!client) {
-        return reply.code(401).send({
-          error:
-            "Missing Bexio API token. Pass Authorization: Bearer <token> or set BEXIO_API_TOKEN.",
-        });
+        sendUnauthorized(request, reply);
+        return;
       }
 
       const result = await handler(params, client);
@@ -213,13 +298,15 @@ export async function createHttpServer(
     await app.listen({ host, port });
     logger.info(`HTTP server listening on ${host}:${port}`);
     logger.info("Available endpoints:");
-    logger.info("  GET  /          - Health check");
-    logger.info("  GET  /tools     - List all tools");
-    logger.info("  POST /mcp       - JSON-RPC endpoint");
-    logger.info("  POST /tools/call - Direct tool call");
-    logger.info("  POST /n8n/call  - n8n-friendly endpoint");
+    logger.info("  GET  /                                          - Health check");
+    logger.info("  GET  /.well-known/oauth-protected-resource[/mcp] - OAuth PRM (RFC 9728)");
+    logger.info("  GET  /.well-known/oauth-authorization-server   - Bexio AS metadata");
+    logger.info("  GET  /tools                                     - List all tools");
+    logger.info("  POST /mcp                                       - JSON-RPC endpoint");
+    logger.info("  POST /tools/call                                - Direct tool call");
+    logger.info("  POST /n8n/call                                  - n8n-friendly endpoint");
     logger.info(
-      "Auth: send Authorization: Bearer <bexio-token> on tool calls (env token is fallback)"
+      "Auth: Authorization: Bearer <bexio-access-token> (OAuth via Bexio IdP); env token is optional fallback"
     );
   } catch (error) {
     logger.error("Failed to start HTTP server:", error);
@@ -227,6 +314,26 @@ export async function createHttpServer(
   }
 
   return app;
+}
+
+/** Methods that do not require a Bexio token (handshake / catalog). */
+function isPublicMcpMethod(
+  body:
+    | { method?: string }
+    | Array<{ method?: string }>
+    | undefined
+): boolean {
+  if (!body) return false;
+  if (Array.isArray(body)) {
+    return body.every(
+      (r) => r.method === "initialize" || r.method === "tools/list" || r.method === "notifications/initialized"
+    );
+  }
+  return (
+    body.method === "initialize" ||
+    body.method === "tools/list" ||
+    body.method === "notifications/initialized"
+  );
 }
 
 /**
@@ -241,7 +348,9 @@ async function handleJsonRpcRequest(
     params?: unknown;
   },
   handlerRegistry: HandlerRegistry,
-  clientOverride?: BexioClient
+  clientOverride: BexioClient | undefined,
+  httpRequest?: FastifyRequest,
+  httpReply?: FastifyReply
 ): Promise<unknown> {
   const { id, method, params } = request;
 
@@ -256,10 +365,14 @@ async function handleJsonRpcRequest(
           capabilities: { tools: {} },
           serverInfo: {
             name: "bexio-mcp-server",
-            version: "2.0.0",
+            version: "2.5.0",
           },
         },
       };
+    }
+
+    if (method === "notifications/initialized") {
+      return { jsonrpc: "2.0", id, result: {} };
     }
 
     if (method === "tools/list") {
@@ -291,13 +404,18 @@ async function handleJsonRpcRequest(
       }
 
       if (!clientOverride && !companyManager.hasConfiguredCompanies()) {
+        // Prefer HTTP 401 + WWW-Authenticate for OAuth-capable clients
+        if (httpRequest && httpReply && !httpReply.sent) {
+          sendUnauthorized(httpRequest, httpReply);
+          return;
+        }
         return {
           jsonrpc: "2.0",
           id,
           error: {
             code: -32001,
             message:
-              "Missing Bexio API token. Pass Authorization: Bearer <token> or set BEXIO_API_TOKEN.",
+              "Missing Bexio access token. Authorize via Bexio OAuth, then send Authorization: Bearer <token>.",
           },
         };
       }
