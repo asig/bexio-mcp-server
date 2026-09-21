@@ -1,0 +1,7 @@
+Bexio MCP Server installer packaging.
+
+The application is provided as a Docker image. Use is subject to the
+license of the upstream project and Bexio API terms.
+
+This installer does not grant rights to the Bexio service itself.
+You must obtain your own Bexio credentials / OAuth app registration.
