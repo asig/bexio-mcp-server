@@ -1,0 +1,23 @@
+{
+  "name": "bexio-oauth-bridge",
+  "version": "1.0.0",
+  "description": "Global Bexio OAuth service: holds client secret, stores tokens, issues access tokens for MCP clients",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "fastify": "^5.2.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  }
+}
