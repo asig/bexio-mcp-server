@@ -28,7 +28,7 @@ DOCKER      ?= docker
 BUILDKIT    ?= 1
 PORT        ?= 3100
 
-.PHONY: help build build-no-cache tag login push release run run-env clean print-image
+.PHONY: help build build-no-cache tag login push release run run-env clean print-image compose-up compose-down compose-logs
 
 help:
 	@echo "Targets:"
@@ -38,6 +38,9 @@ help:
 	@echo "  make push        Login, tag, push to $(IMAGE):$(TAG)"
 	@echo "  make release     build + push"
 	@echo "  make clean       Remove local image tags"
+	@echo "  make compose-up  docker compose up -d --build"
+	@echo "  make compose-down   Stop compose stack"
+	@echo "  make compose-logs  Follow container logs"
 	@echo ""
 	@echo "Variables: GHCR_USER=$(GHCR_USER) TAG=$(TAG) VERSION=$(VERSION) PORT=$(PORT)"
 
@@ -99,3 +102,16 @@ run-env:
 
 clean:
 	-$(DOCKER) rmi $(LOCAL_IMAGE) $(IMAGE):$(TAG) $(if $(VERSION),$(IMAGE):$(VERSION),) 2>/dev/null || true
+
+
+# ---- Compose (prod host) ----
+
+compose-up:
+	@test -f .env || { echo "error: create .env from .env.example"; exit 1; }
+	docker compose up -d --build
+
+compose-down:
+	docker compose down
+
+compose-logs:
+	docker compose logs -f bexio-oauth-bridge

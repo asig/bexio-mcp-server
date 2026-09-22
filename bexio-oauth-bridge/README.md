@@ -99,6 +99,36 @@ make release GHCR_USER=youruser
 
 Image: `bexio-oauth-bridge:latest` (or `ghcr.io/<user>/bexio-oauth-bridge:latest`)
 
+
+## Production (Docker Compose)
+
+On the prod host:
+
+```bash
+git clone <this-repo> && cd bexio-oauth-bridge   # or copy the folder
+cp .env.example .env
+# Edit .env — required:
+#   BEXIO_CLIENT_ID=
+#   BEXIO_CLIENT_SECRET=
+#   TOKEN_ENCRYPTION_KEY=   # openssl rand -hex 32
+#   PUBLIC_BASE_URL=https://auth.yourdomain.com
+#   BEXIO_REDIRECT_URI=https://auth.yourdomain.com/oauth/bexio/callback
+
+docker compose up -d --build
+docker compose ps
+curl -s https://auth.yourdomain.com/health   # via your reverse proxy
+```
+
+Register the same redirect URI on the global Bexio app at developer.bexio.com.
+
+TLS: terminate HTTPS on Caddy/nginx/Traefik and proxy to `127.0.0.1:3100` (or the compose service on a shared Docker network). See `docker-compose.prod.example.yml` for a no-published-port layout.
+
+```bash
+docker compose logs -f bexio-oauth-bridge
+docker compose pull   # if using a pre-built image
+docker compose up -d
+```
+
 ## Security notes
 
 - Deploy over **HTTPS** in production (`PUBLIC_BASE_URL`, redirect URI).
