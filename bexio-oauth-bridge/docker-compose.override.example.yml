@@ -6,6 +6,7 @@
 
 services:
   bexio-oauth-bridge:
+    image: ghcr.io/asig/bexio-oauth-bridge:latest
     ports:
       - "3100:3100"
     environment:
