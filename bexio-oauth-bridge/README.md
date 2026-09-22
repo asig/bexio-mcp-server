@@ -100,6 +100,32 @@ make release GHCR_USER=youruser
 Image: `bexio-oauth-bridge:latest` (or `ghcr.io/<user>/bexio-oauth-bridge:latest`)
 
 
+
+## Claude Desktop (transparent OAuth — Option B)
+
+This service acts as an **OAuth 2.0 Authorization Server**. Claude never receives the Bexio client secret.
+
+1. Register on the Bexio app **only** this redirect URI:  
+   `https://auth.yourdomain.com/oauth/bexio/callback`
+2. Point the **MCP** discovery issuer at this bridge (not Bexio directly), e.g. on the MCP container:  
+   `BEXIO_OAUTH_ISSUER=https://auth.yourdomain.com`  
+   or set MCP metadata `authorization_servers` to `https://auth.yourdomain.com`
+3. In Claude, add the MCP HTTP URL. Claude should discover:  
+   `https://auth.yourdomain.com/.well-known/oauth-authorization-server`
+4. User signs in via Bexio; Claude stores tokens and calls MCP with `Authorization: Bearer <access_token>`.
+
+| Endpoint | Role |
+|----------|------|
+| `GET /.well-known/oauth-authorization-server` | AS metadata |
+| `GET /oauth/authorize` | Start login (PKCE); redirects to Bexio |
+| `GET /oauth/bexio/callback` | Bexio returns here (server uses client secret) |
+| `POST /oauth/token` | Claude exchanges code / refreshes token |
+| Public `client_id` | `bexio-mcp` (no secret; PKCE required) |
+
+Set `ALLOWED_REDIRECT_URIS` to Claude’s callback URL(s) in production.
+
+**MCP config note:** The access token Claude sends is a **Bexio** access token; the MCP continues to forward it unchanged.
+
 ## Production (Docker Compose)
 
 On the prod host:

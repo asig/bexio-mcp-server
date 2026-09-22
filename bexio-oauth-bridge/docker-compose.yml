@@ -1,0 +1,73 @@
+# Bexio OAuth Bridge — production compose
+#
+# Setup:
+#   1. cp .env.example .env
+#   2. Fill BEXIO_CLIENT_ID, BEXIO_CLIENT_SECRET, BEXIO_REDIRECT_URI,
+#      PUBLIC_BASE_URL, TOKEN_ENCRYPTION_KEY
+#   3. docker compose up -d
+#
+# PUBLIC_BASE_URL and BEXIO_REDIRECT_URI must use your real HTTPS host, e.g.:
+#   PUBLIC_BASE_URL=https://auth.example.com
+#   BEXIO_REDIRECT_URI=https://auth.example.com/oauth/bexio/callback
+#
+# Put a reverse proxy (Caddy/nginx/Traefik) in front for TLS.
+# This compose only binds the app; TLS terminates on the proxy.
+
+services:
+  bexio-oauth-bridge:
+    image: bexio-oauth-bridge:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bexio-oauth-bridge
+    restart: unless-stopped
+    ports:
+      # Host:container — change left side if 3100 is taken
+      - "${HOST_PORT:-3100}:3100"
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      HOST: "0.0.0.0"
+      PORT: "3100"
+      DATABASE_PATH: /app/data/tokens.json
+      # Override from .env if set; listed here so compose documents them
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      BEXIO_CLIENT_ID: ${BEXIO_CLIENT_ID:-}
+      BEXIO_CLIENT_SECRET: ${BEXIO_CLIENT_SECRET:-}
+      BEXIO_REDIRECT_URI: ${BEXIO_REDIRECT_URI:-}
+      BEXIO_OAUTH_ISSUER: ${BEXIO_OAUTH_ISSUER:-https://auth.bexio.com/realms/bexio}
+      BEXIO_SCOPES: ${BEXIO_SCOPES:-openid profile email company_profile offline_access contact_edit kb_invoice_edit}
+      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY:-}
+      BRIDGE_API_KEY: ${BRIDGE_API_KEY:-}
+    volumes:
+      - bridge-data:/app/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3100/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # Uncomment if the host firewall / proxy sits on a private network only:
+    # networks:
+    #   - proxy
+
+volumes:
+  bridge-data:
+    name: bexio-oauth-bridge-data
+
+# networks:
+#   proxy:
+#     external: true
+#     name: your-proxy-network

@@ -1,0 +1,14 @@
+# Example: auth bridge behind an existing reverse-proxy network (no host ports).
+# Copy ideas into docker-compose.yml or use:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.example.yml up -d
+#
+# Requires an external network your Caddy/Traefik/nginx already uses.
+
+services:
+  bexio-oauth-bridge:
+    ports:
+      - "3100:3100"
+    environment:
+      # Must match the public URL the proxy serves
+      PUBLIC_BASE_URL: https://auth.example.com
+      BEXIO_REDIRECT_URI: https://auth.example.com/oauth/bexio/callback
