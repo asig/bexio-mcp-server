@@ -35,3 +35,21 @@ Files
   status-bexio-mcp.bat   Show container status
   config.env             Image name and ports
   bexio-mcp-server-image.tar.gz   Docker image archive
+
+
+Configuration (config.env)
+--------------------------
+Same folder as the .bat files (install dir), e.g.:
+  C:\Program Files\BexioMCPServer\config.env
+
+If the file is missing, "Start Bexio MCP Server" creates it and opens Notepad.
+
+Example:
+  IMAGE_NAME=bexio-mcp-server:latest
+  CONTAINER_NAME=bexio-mcp-server
+  HOST_PORT=8000
+  CONTAINER_PORT=8000
+  BEXIO_OAUTH_ISSUER=https://auth.researchmaus.com
+  MCP_PUBLIC_URL=http://127.0.0.1:8000
+
+Re-run Start Bexio MCP Server after editing so docker run picks up new -e values.

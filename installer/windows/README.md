@@ -53,6 +53,15 @@ makensis \
   bexio-mcp-server.nsi
 ```
 
+## Installer pages
+
+After the license page, a **Docker Desktop** page appears that:
+
+- Detects whether `docker` is on PATH and whether the engine responds
+- Links to the Docker Desktop website / download
+- Lets the user **Check again** after installing/starting Docker
+- Allows continuing without Docker (with a warning); the server will not run until Docker is available
+
 ## On Windows (end user)
 
 1. Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) and use **Linux containers**.
