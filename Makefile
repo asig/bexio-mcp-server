@@ -29,9 +29,11 @@ LOCAL_IMAGE  := $(IMAGE_NAME):$(TAG)
 DOCKER       ?= docker
 BUILDKIT     ?= 1
 
+DIST_DIR     := dist
+BUILD_DIR    := build
 NSIS_DIR     := installer/windows
-IMAGE_TAR    := $(NSIS_DIR)/bexio-mcp-server-image.tar.gz
-NSIS_OUT     := $(NSIS_DIR)/BexioMCPServer-Setup-$(NSIS_VERSION).exe
+IMAGE_TAR    := $(BUILD_DIR)/bexio-mcp-server-image.tar.gz
+NSIS_OUT     := $(DIST_DIR)/BexioMCPServer-Setup-$(NSIS_VERSION).exe
 NSIS_SCRIPT  := $(NSIS_DIR)/bexio-mcp-server.nsi
 
 .PHONY: help build build-no-cache tag login push release run clean print-image \
@@ -104,8 +106,9 @@ run:
 
 clean:
 	-$(DOCKER) rmi $(LOCAL_IMAGE) $(IMAGE):$(TAG) $(if $(VERSION),$(IMAGE):$(VERSION),) 2>/dev/null || true
-	-rm -f "$(IMAGE_TAR)" "$(NSIS_DIR)"/BexioMCPServer-Setup-*.exe
-
+	-rm -f "$(IMAGE_TAR)" "$(DIST_DIR)"/BexioMCPServer-Setup-*.exe
+	-rm -rf "$(BUILD_DIR)"
+	
 # ---- Windows NSIS installer (cross-build on Linux) ----
 # Requires: sudo apt-get install -y nsis
 #
@@ -114,7 +117,7 @@ clean:
 
 image-tar: build
 	@echo "Exporting $(LOCAL_IMAGE) -> $(IMAGE_TAR)"
-	mkdir -p "$(NSIS_DIR)"
+	mkdir -p "$(BUILD_DIR)"
 	$(DOCKER) save $(LOCAL_IMAGE) | gzip > "$(IMAGE_TAR)"
 	@ls -lh "$(IMAGE_TAR)"
 
@@ -126,15 +129,16 @@ installer: image-tar
 	}
 	@test -f "$(NSIS_SCRIPT)" || { echo "error: missing $(NSIS_SCRIPT)"; exit 1; }
 	@test -f "$(IMAGE_TAR)" || { echo "error: missing $(IMAGE_TAR)"; exit 1; }
+	mkdir -p "$(DIST_DIR)" "$(BUILD_DIR)"
 	cd "$(NSIS_DIR)" && makensis \
 		-DPRODUCT_VERSION=$(NSIS_VERSION) \
 		-DIMAGE_NAME=$(LOCAL_IMAGE) \
-		-DIMAGE_TAR=bexio-mcp-server-image.tar.gz \
+		-DIMAGE_TAR=$(abspath $(IMAGE_TAR)) \
 		-DCONTAINER_PORT=8000 \
-		-DOUTFILE=BexioMCPServer-Setup-$(NSIS_VERSION).exe \
+		-DOUTFILE=$(abspath $(DIST_DIR)/BexioMCPServer-Setup-$(NSIS_VERSION).exe) \
 		bexio-mcp-server.nsi
-	@ls -lh "$(NSIS_OUT)"
-	@echo "Windows installer ready: $(NSIS_OUT)"
+	@ls -lh "$(DIST_DIR)/BexioMCPServer-Setup-$(NSIS_VERSION).exe"
+	@echo "Windows installer ready: $(abspath $(DIST_DIR)/BexioMCPServer-Setup-$(NSIS_VERSION).exe)"
 
 # Alias
 windows-installer: installer
