@@ -18,3 +18,5 @@ src/.env
 
 # Build artifacts (committed separately)
 *.mcpb
+build
+dist
