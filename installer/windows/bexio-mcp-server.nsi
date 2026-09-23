@@ -95,7 +95,10 @@ Page custom DockerDesktopPageCreate DockerDesktopPageLeave
 
 !insertmacro MUI_LANGUAGE "English"
 
-VIProductVersion "${PRODUCT_VERSION}.0"
+!ifndef VI_PRODUCT_VERSION
+  !define VI_PRODUCT_VERSION "0.0.0.1"
+!endif
+VIProductVersion "${VI_PRODUCT_VERSION}"
 VIAddVersionKey "ProductName" "${PRODUCT_NAME}"
 VIAddVersionKey "CompanyName" "${PRODUCT_PUBLISHER}"
 VIAddVersionKey "FileDescription" "Installer for ${PRODUCT_NAME} (Docker image + helpers)"
