@@ -1,0 +1,262 @@
+# Build Docker images (GHCR) + Windows NSIS installer
+#
+# Triggers:
+#   - push to main/master
+#   - tags v* (creates GitHub Release with installer)
+#   - pull_request (build only, no push)
+#   - workflow_dispatch
+#
+# Secrets / permissions:
+#   GITHUB_TOKEN is enough for ghcr.io push when packages: write is set.
+#   Package visibility: Settings → Packages → change visibility if needed.
+
+name: Build and release
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Installer / image version override (e.g. 0.1.0). Empty = derive from tag or 0.0.0-ci"
+        required: false
+        default: ""
+
+env:
+  REGISTRY: ghcr.io
+  # ghcr.io/<owner>/<image> — lowercase required
+  MCP_IMAGE_NAME: bexio-mcp-server
+  BRIDGE_IMAGE_NAME: bexio-oauth-bridge
+
+permissions:
+  contents: write
+  packages: write
+  attestations: write
+  id-token: write
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Docker: MCP server
+  # --------------------------------------------------------------------------
+  docker-mcp:
+    name: Docker (bexio-mcp-server)
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive version and tags
+        id: meta
+        run: |
+          set -euo pipefail
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE="${{ env.REGISTRY }}/${OWNER}/${{ env.MCP_IMAGE_NAME }}"
+
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VERSION="${{ github.ref_name }}"
+            VERSION="${VERSION#v}"
+          else
+            VERSION="0.0.0-ci.${{ github.run_number }}"
+          fi
+
+          TAGS="${IMAGE}:latest"
+          TAGS="${TAGS},${IMAGE}:${VERSION}"
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            TAGS="${TAGS},${IMAGE}:${{ github.ref_name }}"
+          fi
+
+          echo "owner=${OWNER}" >> "$GITHUB_OUTPUT"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+          echo "VERSION=${VERSION}"
+          echo "TAGS=${TAGS}"
+
+      - name: Build and push MCP image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+  # --------------------------------------------------------------------------
+  # Docker: OAuth bridge (optional sibling directory)
+  # --------------------------------------------------------------------------
+  docker-bridge:
+    name: Docker (bexio-oauth-bridge)
+    runs-on: ubuntu-latest
+    # Skip if the bridge is not in this repo
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for bridge sources
+        id: check
+        run: |
+          if [ -f bexio-oauth-bridge/Dockerfile ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          elif [ -f ../bexio-oauth-bridge/Dockerfile ]; then
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+          ls -la bexio-oauth-bridge/Dockerfile 2>/dev/null || true
+
+      - name: Set up Docker Buildx
+        if: steps.check.outputs.present == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: steps.check.outputs.present == 'true' && github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tags for bridge
+        if: steps.check.outputs.present == 'true'
+        id: meta
+        run: |
+          OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE="${{ env.REGISTRY }}/${OWNER}/${{ env.BRIDGE_IMAGE_NAME }}"
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VERSION="${{ github.ref_name }}"
+            VERSION="${VERSION#v}"
+          else
+            VERSION="0.0.0-ci.${{ github.run_number }}"
+          fi
+          echo "tags=${IMAGE}:latest,${IMAGE}:${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push bridge image
+        if: steps.check.outputs.present == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: ./bexio-oauth-bridge
+          file: ./bexio-oauth-bridge/Dockerfile
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha,scope=bridge
+          cache-to: type=gha,mode=max,scope=bridge
+          provenance: false
+
+      - name: Skip notice
+        if: steps.check.outputs.present != 'true'
+        run: echo "No bexio-oauth-bridge/ in this repo — skipping bridge image."
+
+  # --------------------------------------------------------------------------
+  # Windows NSIS installer (built on Linux with makensis)
+  # --------------------------------------------------------------------------
+  windows-installer:
+    name: Windows installer (NSIS)
+    runs-on: ubuntu-latest
+    needs: [docker-mcp]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install NSIS
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nsis
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Derive version
+        id: ver
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VERSION="${{ github.ref_name }}"
+            VERSION="${VERSION#v}"
+          else
+            VERSION="${{ needs.docker-mcp.outputs.version }}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "VERSION=${VERSION}"
+
+      - name: Build image and export tar (for installer embed)
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.ver.outputs.version }}"
+          docker build -t "bexio-mcp-server:latest" -t "bexio-mcp-server:${VERSION}" .
+          mkdir -p build dist
+          docker save bexio-mcp-server:latest | gzip > build/bexio-mcp-server-image.tar.gz
+          ls -lh build/bexio-mcp-server-image.tar.gz
+
+      - name: Compile NSIS installer
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.ver.outputs.version }}"
+          NSIS_SCRIPT="installer/windows/bexio-mcp-server.nsi"
+          test -f "$NSIS_SCRIPT"
+          test -f build/bexio-mcp-server-image.tar.gz
+          mkdir -p dist
+          IMAGE_TAR="$(pwd)/build/bexio-mcp-server-image.tar.gz"
+          OUTFILE="$(pwd)/dist/BexioMCPServer-Setup-${VERSION}.exe"
+          cd installer/windows
+          makensis \
+            -DPRODUCT_VERSION="${VERSION}" \
+            -DIMAGE_NAME="bexio-mcp-server:latest" \
+            -DIMAGE_TAR="${IMAGE_TAR}" \
+            -DCONTAINER_PORT=8000 \
+            -DOUTFILE="${OUTFILE}" \
+            bexio-mcp-server.nsi
+          ls -lh "${OUTFILE}"
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BexioMCPServer-Setup-${{ steps.ver.outputs.version }}
+          path: dist/BexioMCPServer-Setup-*.exe
+          if-no-files-found: error
+          retention-days: 30
+
+  # --------------------------------------------------------------------------
+  # GitHub Release on version tags
+  # --------------------------------------------------------------------------
+  release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    needs: [docker-mcp, windows-installer]
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Download installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*.exe
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
