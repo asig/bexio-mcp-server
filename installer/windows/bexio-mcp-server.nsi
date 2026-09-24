@@ -247,7 +247,6 @@ Section "MainSection" SEC01
   File "scripts\load-image.bat"
   File "scripts\status-bexio-mcp.bat"
   File "scripts\README-WINDOWS.txt"
-  File "scripts\config.env.example"
 
   File "LICENSE.txt"
 
@@ -342,7 +341,6 @@ Section "Uninstall"
   Delete "$INSTDIR\README-WINDOWS.txt"
   Delete "$INSTDIR\LICENSE.txt"
   Delete "$INSTDIR\config.env"
-  Delete "$INSTDIR\config.env.example"
   Delete "$INSTDIR\bexio-mcp-server-image.tar.gz"
   Delete "$INSTDIR\Uninstall.exe"
 
