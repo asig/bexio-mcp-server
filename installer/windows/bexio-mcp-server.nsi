@@ -22,6 +22,10 @@
 !ifndef PRODUCT_VERSION
   !define PRODUCT_VERSION "2.5.0"
 !endif
+; PE version resource must be exactly N.N.N.N (digits only). CI tags like 0.0.0-ci.1 are invalid.
+!ifndef VI_PRODUCT_VERSION
+  !define VI_PRODUCT_VERSION "0.0.0.1"
+!endif
 !ifndef PRODUCT_PUBLISHER
   !define PRODUCT_PUBLISHER "Bexio MCP"
 !endif
@@ -95,9 +99,6 @@ Page custom DockerDesktopPageCreate DockerDesktopPageLeave
 
 !insertmacro MUI_LANGUAGE "English"
 
-!ifndef VI_PRODUCT_VERSION
-  !define VI_PRODUCT_VERSION "0.0.0.1"
-!endif
 VIProductVersion "${VI_PRODUCT_VERSION}"
 VIAddVersionKey "ProductName" "${PRODUCT_NAME}"
 VIAddVersionKey "CompanyName" "${PRODUCT_PUBLISHER}"
@@ -144,29 +145,29 @@ Function DockerDesktopPageCreate
     Abort
   ${EndIf}
 
-  ${NSD_CreateLabel} 0 0 100% 40u \
-    "Bexio MCP Server is distributed as a Docker image. You need Docker Desktop \
-for Windows with Linux containers enabled before you can start the server."
+  ; Keep controls within the MUI inner dialog (~120u tall) so buttons stay visible.
+  ${NSD_CreateLabel} 0 0 100% 28u \
+    "Bexio MCP Server is a Docker image. Install Docker Desktop for Windows (Linux containers) before starting the server."
   Pop $0
 
-  ${NSD_CreateLabel} 0 48u 100% 24u ""
+  ${NSD_CreateLabel} 0 32u 100% 20u ""
   Pop $DockerStatusLabel
 
-  ${NSD_CreateLabel} 0 78u 100% 36u \
+  ${NSD_CreateLabel} 0 54u 100% 28u \
     "1. Install Docker Desktop from the official site.$\r$\n\
-2. Start Docker Desktop and wait until it is running.$\r$\n\
-3. Click $\"Check again$\" below, then continue."
+2. Start it and wait until it is running.$\r$\n\
+3. Click $\"Check again$\", then Next."
   Pop $DockerHintLabel
 
-  ${NSD_CreateLink} 0 120u 100% 12u "Open Docker Desktop download page"
+  ${NSD_CreateLink} 0 88u 100% 12u "Open Docker Desktop download page"
   Pop $DockerLink
   ${NSD_OnClick} $DockerLink OnDockerLink
 
-  ${NSD_CreateButton} 0 140u 120u 18u "Download Docker Desktop"
+  ${NSD_CreateButton} 0 104u 140u 16u "Download Docker Desktop"
   Pop $BtnOpenDownload
   ${NSD_OnClick} $BtnOpenDownload OnDockerDownload
 
-  ${NSD_CreateButton} 130u 140u 100u 18u "Check again"
+  ${NSD_CreateButton} 150u 104u 100u 16u "Check again"
   Pop $BtnRecheck
   ${NSD_OnClick} $BtnRecheck OnDockerRecheck
 
@@ -246,6 +247,7 @@ Section "MainSection" SEC01
   File "scripts\load-image.bat"
   File "scripts\status-bexio-mcp.bat"
   File "scripts\README-WINDOWS.txt"
+  File "scripts\config.env.example"
 
   File "LICENSE.txt"
 
@@ -259,11 +261,16 @@ Section "MainSection" SEC01
   image_done:
 
   ; Write config used by the .bat scripts
+  ; Default config.env for run-bexio-mcp.bat
   FileOpen $0 "$INSTDIR\config.env" w
+  FileWrite $0 "# Edit this file, then use Start Bexio MCP Server$\r$\n"
   FileWrite $0 "IMAGE_NAME=${IMAGE_NAME}$\r$\n"
   FileWrite $0 "CONTAINER_NAME=bexio-mcp-server$\r$\n"
   FileWrite $0 "HOST_PORT=${CONTAINER_PORT}$\r$\n"
   FileWrite $0 "CONTAINER_PORT=8000$\r$\n"
+  FileWrite $0 "$\r$\n"
+  FileWrite $0 "BEXIO_OAUTH_ISSUER=https://auth.researchmaus.com$\r$\n"
+  FileWrite $0 "MCP_PUBLIC_URL=http://127.0.0.1:${CONTAINER_PORT}$\r$\n"
   FileClose $0
 
   ; Uninstaller
@@ -335,6 +342,7 @@ Section "Uninstall"
   Delete "$INSTDIR\README-WINDOWS.txt"
   Delete "$INSTDIR\LICENSE.txt"
   Delete "$INSTDIR\config.env"
+  Delete "$INSTDIR\config.env.example"
   Delete "$INSTDIR\bexio-mcp-server-image.tar.gz"
   Delete "$INSTDIR\Uninstall.exe"
 
