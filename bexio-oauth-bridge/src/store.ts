@@ -56,10 +56,24 @@ interface Session {
   updatedAt: number;
 }
 
+/** RFC 7591 registered OAuth client (DCR) */
+export interface RegisteredClient {
+  clientId: string;
+  clientSecretHash: string | null; // null = public client
+  clientName: string | null;
+  redirectUris: string[];
+  grantTypes: string[];
+  responseTypes: string[];
+  tokenEndpointAuthMethod: string;
+  scope: string | null;
+  clientIdIssuedAt: number;
+}
+
 interface DbFile {
   pending: Record<string, Pending>;
   authCodes: Record<string, AuthCodeRecord>;
   sessions: Record<string, Session>;
+  clients: Record<string, RegisteredClient>;
 }
 
 export class TokenStore {
@@ -76,7 +90,7 @@ export class TokenStore {
 
   private load(): DbFile {
     if (!fs.existsSync(this.filePath)) {
-      return { pending: {}, authCodes: {}, sessions: {} };
+      return { pending: {}, authCodes: {}, sessions: {}, clients: {} };
     }
     try {
       const raw = JSON.parse(fs.readFileSync(this.filePath, "utf8")) as Partial<DbFile>;
@@ -84,9 +98,10 @@ export class TokenStore {
         pending: raw.pending ?? {},
         authCodes: raw.authCodes ?? {},
         sessions: raw.sessions ?? {},
+        clients: raw.clients ?? {},
       };
     } catch {
-      return { pending: {}, authCodes: {}, sessions: {} };
+      return { pending: {}, authCodes: {}, sessions: {}, clients: {} };
     }
   }
 
@@ -230,5 +245,51 @@ export class TokenStore {
 
   deleteByBridgeToken(bridgeToken: string): boolean {
     return this.deleteByRefreshToken(bridgeToken);
+  }
+
+  // ---- DCR clients (RFC 7591) ----
+
+  registerClient(input: {
+    redirectUris: string[];
+    clientName?: string;
+    grantTypes?: string[];
+    responseTypes?: string[];
+    tokenEndpointAuthMethod?: string;
+    scope?: string;
+    /** If true, issue a client_secret (confidential). Default: public. */
+    confidential?: boolean;
+  }): { clientId: string; clientSecret?: string; record: RegisteredClient } {
+    const clientId = `dcr_${randomToken(16)}`;
+    let clientSecret: string | undefined;
+    let clientSecretHash: string | null = null;
+    const method = input.tokenEndpointAuthMethod ?? "none";
+    if (input.confidential || (method !== "none" && method !== "")) {
+      clientSecret = randomToken(24);
+      clientSecretHash = sha256(clientSecret);
+    }
+    const record: RegisteredClient = {
+      clientId,
+      clientSecretHash,
+      clientName: input.clientName ?? null,
+      redirectUris: input.redirectUris,
+      grantTypes: input.grantTypes ?? ["authorization_code", "refresh_token"],
+      responseTypes: input.responseTypes ?? ["code"],
+      tokenEndpointAuthMethod: method === "" ? "none" : method,
+      scope: input.scope ?? null,
+      clientIdIssuedAt: Math.floor(Date.now() / 1000),
+    };
+    this.data.clients[clientId] = record;
+    this.save();
+    return { clientId, clientSecret, record };
+  }
+
+  getClient(clientId: string): RegisteredClient | undefined {
+    return this.data.clients[clientId];
+  }
+
+  clientAllowsRedirect(clientId: string, redirectUri: string): boolean {
+    const c = this.data.clients[clientId];
+    if (!c) return false;
+    return c.redirectUris.includes(redirectUri);
   }
 }

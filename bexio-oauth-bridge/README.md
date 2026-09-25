@@ -120,6 +120,7 @@ This service acts as an **OAuth 2.0 Authorization Server**. Claude never receive
 | `GET /oauth/authorize` | Start login (PKCE); redirects to Bexio |
 | `GET /oauth/bexio/callback` | Bexio returns here (server uses client secret) |
 | `POST /oauth/token` | Claude exchanges code / refreshes token |
+| `POST /oauth/register` | Dynamic Client Registration (RFC 7591) for Claude |
 | Public `client_id` | `bexio-mcp` (no secret; PKCE required) |
 
 Set `ALLOWED_REDIRECT_URIS` to Claude’s callback URL(s) in production.

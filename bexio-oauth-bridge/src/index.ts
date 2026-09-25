@@ -51,14 +51,18 @@ function authorizationServerMetadata() {
     issuer: base,
     authorization_endpoint: `${base}/oauth/authorize`,
     token_endpoint: `${base}/oauth/token`,
+    registration_endpoint: `${base}/oauth/register`,
     revocation_endpoint: `${base}/oauth/revoke`,
     response_types_supported: ["code"],
     grant_types_supported: ["authorization_code", "refresh_token"],
     code_challenge_methods_supported: ["S256", "plain"],
-    token_endpoint_auth_methods_supported: ["none"],
+    // "none" required for Claude public clients / CIMD / DCR without secret
+    token_endpoint_auth_methods_supported: ["none", "client_secret_post"],
     scopes_supported: config.bexio.scopes,
     subject_types_supported: ["public"],
     service_documentation: base,
+    // Claude prefers CIMD when this is true; DCR is the fallback via registration_endpoint
+    client_id_metadata_document_supported: true,
   };
 }
 
@@ -68,6 +72,72 @@ app.get("/.well-known/oauth-authorization-server", async () =>
 app.get("/.well-known/openid-configuration", async () =>
   authorizationServerMetadata()
 );
+
+// ---------------------------------------------------------------------------
+// Dynamic Client Registration (RFC 7591) — Claude "Register automatically"
+// ---------------------------------------------------------------------------
+
+app.post("/oauth/register", async (request, reply) => {
+  const body = (request.body ?? {}) as Record<string, unknown>;
+
+  const redirectUris = normalizeStringArray(body.redirect_uris);
+  if (redirectUris.length === 0) {
+    return reply.code(400).send({
+      error: "invalid_client_metadata",
+      error_description: "redirect_uris required",
+    });
+  }
+  for (const uri of redirectUris) {
+    if (!isRedirectUriAllowed(uri)) {
+      return reply.code(400).send({
+        error: "invalid_redirect_uri",
+        error_description: `redirect_uri not allowed: ${uri}`,
+      });
+    }
+  }
+
+  const grantTypes = normalizeStringArray(body.grant_types);
+  const responseTypes = normalizeStringArray(body.response_types);
+  const tokenEndpointAuthMethod =
+    typeof body.token_endpoint_auth_method === "string"
+      ? body.token_endpoint_auth_method
+      : "none";
+  const clientName =
+    typeof body.client_name === "string" ? body.client_name : undefined;
+  const scope = typeof body.scope === "string" ? body.scope : undefined;
+
+  const confidential =
+    tokenEndpointAuthMethod !== "none" && tokenEndpointAuthMethod !== "";
+
+  const { clientId, clientSecret, record } = store.registerClient({
+    redirectUris,
+    clientName,
+    grantTypes: grantTypes.length ? grantTypes : undefined,
+    responseTypes: responseTypes.length ? responseTypes : undefined,
+    tokenEndpointAuthMethod,
+    scope,
+    confidential,
+  });
+
+  request.log.info({ clientId, redirectUris }, "DCR client registered");
+
+  const response: Record<string, unknown> = {
+    client_id: clientId,
+    client_id_issued_at: record.clientIdIssuedAt,
+    redirect_uris: record.redirectUris,
+    grant_types: record.grantTypes,
+    response_types: record.responseTypes,
+    token_endpoint_auth_method: record.tokenEndpointAuthMethod,
+  };
+  if (clientName) response.client_name = clientName;
+  if (scope) response.scope = scope;
+  if (clientSecret) {
+    response.client_secret = clientSecret;
+    // No rotation policy — omit client_secret_expires_at (never expires)
+  }
+
+  return reply.code(201).send(response);
+});
 
 // ---------------------------------------------------------------------------
 // OAuth authorize (Claude → us → Bexio)
@@ -98,14 +168,6 @@ app.get<{
   if (!q.redirect_uri) {
     return reply.code(400).send({ error: "invalid_request", error_description: "redirect_uri required" });
   }
-  if (!isRedirectUriAllowed(q.redirect_uri)) {
-    return reply.code(400).send({
-      error: "invalid_request",
-      error_description:
-        "redirect_uri not allowed. Set ALLOWED_REDIRECT_URIS on the bridge to include this URI.",
-      redirect_uri: q.redirect_uri,
-    });
-  }
   if (!q.code_challenge) {
     return oauthErrorRedirect(
       reply,
@@ -117,6 +179,20 @@ app.get<{
   }
 
   const clientId = q.client_id || PUBLIC_CLIENT_ID;
+
+  // Validate client + redirect_uri:
+  // 1) Static public client (bexio-mcp)
+  // 2) DCR-registered client
+  // 3) CIMD: client_id is an https URL (Claude published identity) — fetch & check redirect
+  const clientOk = await validateOAuthClient(clientId, q.redirect_uri, request.log);
+  if (!clientOk.ok) {
+    return reply.code(400).send({
+      error: "invalid_client",
+      error_description: clientOk.error,
+      redirect_uri: q.redirect_uri,
+    });
+  }
+
   const state = randomToken(24);
   const bexioVerifier = pkceVerifier();
   const bexioChallenge = pkceChallenge(bexioVerifier);
@@ -433,7 +509,9 @@ app.get("/", async (_request, reply) => {
 <li><a href="/.well-known/oauth-authorization-server">AS metadata</a></li>
 <li>Authorize: <code>/oauth/authorize</code></li>
 <li>Token: <code>/oauth/token</code></li>
+<li>DCR register: <code>POST /oauth/register</code></li>
 <li>Public client_id: <code>${PUBLIC_CLIENT_ID}</code></li>
+<li>CIMD + DCR supported (Claude &quot;published identity&quot; / &quot;register automatically&quot;)</li>
 </ul>
 <p>MCP should advertise this host as <code>authorization_servers</code> (set <code>BEXIO_OAUTH_ISSUER</code> / public URL on the MCP to <code>${config.publicBaseUrl}</code>).</p>
 <p>Manual connect (legacy): <a href="/oauth/bexio/start">/oauth/bexio/start</a></p>
@@ -452,6 +530,97 @@ function normalizeFormBody(body: unknown): Record<string, string> {
     else if (v != null) out[k] = String(v);
   }
   return out;
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((x): x is string => typeof x === "string" && x.length > 0);
+}
+
+/**
+ * Accept:
+ * - static PUBLIC_CLIENT_ID + global redirect allowlist
+ * - DCR clients (redirect must match registration)
+ * - CIMD: client_id is https URL → fetch document, match redirect_uris
+ */
+async function validateOAuthClient(
+  clientId: string,
+  redirectUri: string,
+  log: { warn: (obj: unknown, msg?: string) => void; error: (obj: unknown, msg?: string) => void }
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  // 1) Built-in public client
+  if (clientId === PUBLIC_CLIENT_ID) {
+    if (!isRedirectUriAllowed(redirectUri)) {
+      return {
+        ok: false,
+        error:
+          "redirect_uri not allowed for public client. Set ALLOWED_REDIRECT_URIS or use DCR.",
+      };
+    }
+    return { ok: true };
+  }
+
+  // 2) DCR-registered client
+  const registered = store.getClient(clientId);
+  if (registered) {
+    if (!registered.redirectUris.includes(redirectUri)) {
+      return { ok: false, error: "redirect_uri not registered for this client" };
+    }
+    return { ok: true };
+  }
+
+  // 3) CIMD — client_id is a metadata document URL
+  if (clientId.startsWith("https://")) {
+    try {
+      const res = await fetch(clientId, {
+        headers: { Accept: "application/json" },
+        redirect: "error",
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!res.ok) {
+        return {
+          ok: false,
+          error: `CIMD fetch failed (${res.status}) for client_id URL`,
+        };
+      }
+      const doc = (await res.json()) as {
+        client_id?: string;
+        redirect_uris?: string[];
+      };
+      if (doc.client_id && doc.client_id !== clientId) {
+        return {
+          ok: false,
+          error: "CIMD client_id field does not match document URL",
+        };
+      }
+      const uris = Array.isArray(doc.redirect_uris) ? doc.redirect_uris : [];
+      if (!uris.includes(redirectUri)) {
+        return {
+          ok: false,
+          error: "redirect_uri not listed in Claude CIMD document",
+        };
+      }
+      // Also respect global allowlist when set
+      if (
+        config.allowedRedirectUris.length > 0 &&
+        !config.allowedRedirectUris.includes(redirectUri)
+      ) {
+        return {
+          ok: false,
+          error: "redirect_uri blocked by ALLOWED_REDIRECT_URIS",
+        };
+      }
+      return { ok: true };
+    } catch (err) {
+      log.error(err, "CIMD fetch error");
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : "CIMD fetch failed",
+      };
+    }
+  }
+
+  return { ok: false, error: `Unknown client_id: ${clientId}` };
 }
 
 function oauthErrorRedirect(
