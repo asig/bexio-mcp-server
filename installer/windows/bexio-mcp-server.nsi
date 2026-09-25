@@ -250,14 +250,14 @@ Section "MainSection" SEC01
 
   File "LICENSE.txt"
 
-  ; Docker image archive (large) — must exist at build time
-  IfFileExists "${IMAGE_TAR}" 0 no_image
+  ; Docker image archive — compile-time embed + always extract to $INSTDIR
+  ; (Do NOT use runtime IfFileExists on IMAGE_TAR: that path is the build machine path.)
+  !if /FileExists "${IMAGE_TAR}"
     File /oname=bexio-mcp-server-image.tar.gz "${IMAGE_TAR}"
-    Goto image_done
-  no_image:
-    DetailPrint "WARNING: ${IMAGE_TAR} not found at build time — installer will not embed the image."
-    DetailPrint "Place the tar.gz next to the .nsi or pass -DIMAGE_TAR=path when running makensis."
-  image_done:
+  !else
+    !error "IMAGE_TAR not found at compile time: ${IMAGE_TAR}. Run docker save first / fix -DIMAGE_TAR=."
+  !endif
+
 
   ; Write config used by the .bat scripts
   ; Default config.env for run-bexio-mcp.bat
