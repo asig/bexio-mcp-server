@@ -1,6 +1,6 @@
 {
   "name": "@promptpartner/bexio-mcp-server",
-  "version": "2.5.0",
+  "version": "2.6.0",
   "mcpName": "io.github.PromptPartner/bexio-mcp-server",
   "description": "Complete Swiss accounting integration for Bexio via MCP. Works with Claude Desktop, n8n, and any MCP client. 314 tools for invoices, contacts, projects, time tracking, account balances and more.",
   "main": "dist/index.js",
@@ -16,7 +16,7 @@
   "scripts": {
     "build": "tsc && npm run build:ui && npm run postbuild",
     "postbuild": "node -e \"require('fs').writeFileSync('dist/package.json', JSON.stringify({type:'module'}, null, 2)+'\\n'); console.log('Created dist/package.json')\"",
-    "build:ui": "node -e \"const fs=require('fs'); if(fs.existsSync('ui')){const{execSync}=require('child_process');execSync('npx vite build',{stdio:'inherit'})}else{console.log('Skipping UI build - ui/ not found')}\"",
+    "build:ui": "node scripts/build-ui.mjs",
     "dev": "tsx watch src/index.ts",
     "dev:ui": "vite build --watch",
     "start": "node dist/index.js",
